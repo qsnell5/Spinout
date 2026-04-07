@@ -7,7 +7,7 @@ function uid() {
 }
 
 async function callAgent(prompt) {
-  const response = await fetch("/.netlify/functions/research", {
+  const response = await fetch("/api/research", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
