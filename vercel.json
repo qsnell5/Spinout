@@ -1,8 +1,10 @@
 {
-  "framework": "vite",
-  "functions": {
-    "api/research.js": {
-      "maxDuration": 60
-    }
-  }
+  "builds": [
+    { "src": "api/research.js", "use": "@vercel/node" },
+    { "src": "package.json", "use": "@vercel/vite" }
+  ],
+  "routes": [
+    { "src": "/api/research", "dest": "/api/research.js" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
 }
