@@ -41,30 +41,13 @@ For each departure you find, return a JSON array with objects containing:
   "destination_type": "spinout | joined_other_firm | operating_role | retired | unknown",
   "new_fund_strategy": "If they started a fund, what's the strategy? Otherwise empty string",
   "fund_size": "If known, the fund size they raised. Otherwise empty string",
-  "summary": "One sentence about what happened, sourced from news"
+  "current_role": "Their current title and organization if known, otherwise empty string",
+  "notable_deals": "Notable investments or deals they led at ${firm} if known, otherwise empty string",
+  "source": "Where you found this information (publication name)"
 }
 
 IMPORTANT: Return ONLY a valid JSON array. No markdown fences, no preamble, no explanation. If you find nothing, return [].
 Be thorough — try to find as many departures as possible across all time periods.`;
-}
-
-function buildDeepDivePrompt(name, firm) {
-  return `Search the web for detailed information about ${name}, who was formerly at ${firm}. Find:
-1. Their full career trajectory (before, during, and after ${firm})
-2. If they started a new fund: fund name, size, strategy, notable investments
-3. Current role and status
-4. Any notable deals or investments they led while at ${firm}
-5. LinkedIn profile changes or recent activity
-
-Return ONLY a JSON object (no markdown, no preamble):
-{
-  "current_role": "Their current title and organization",
-  "career_timeline": [{"year": "YYYY", "role": "Title", "org": "Organization"}],
-  "fund_details": {"name": "", "size": "", "strategy": "", "notable_investments": []},
-  "notable_deals_at_former_firm": ["deal1", "deal2"],
-  "linkedin_summary": "Any info found about their LinkedIn activity",
-  "additional_context": "Any other relevant details"
-}`;
 }
 
 function loadData() {
@@ -84,11 +67,10 @@ export default function App() {
   const [researching, setResearching] = useState(false);
   const [researchLog, setResearchLog] = useState([]);
   const [researchError, setResearchError] = useState(null);
-  const [deepDiving, setDeepDiving] = useState(null);
-  const [deepDiveData, setDeepDiveData] = useState({});
   const [sortBy, setSortBy] = useState("year_desc");
   const [filterDest, setFilterDest] = useState("All");
   const [searchQ, setSearchQ] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => { setFirms(loadData()); setLoaded(true); }, []);
@@ -139,48 +121,17 @@ export default function App() {
   const removeFirm = (firmName) => { setFirms((prev) => { const next = prev.filter((f) => f.name !== firmName); persist(next); return next; }); if (activeFirm === firmName) setActiveFirm(null); };
   const removePerson = (firmName, personId) => { setFirms((prev) => { const next = prev.map((f) => f.name === firmName ? { ...f, people: f.people.filter((p) => p._id !== personId) } : f); persist(next); return next; }); };
 
-  const deepDive = async (person, firmName) => {
-    const key = `${person.name}|||${firmName}`;
-    if (deepDiveData[key]) { setDeepDiving(deepDiving === key ? null : key); return; }
-    setDeepDiving(key);
-    try {
-      const data = await callAgent(buildDeepDivePrompt(person.name, firmName));
-      const raw = data.text || "";
-      let parsed = {};
-      try { const cleaned = raw.replace(/```json\n?|```/g, "").trim(); const match = cleaned.match(/\{[\s\S]*\}/); if (match) parsed = JSON.parse(match[0]); } catch (e) { parsed = { error: "Could not parse results" }; }
-      setDeepDiveData((prev) => ({ ...prev, [key]: parsed }));
-    } catch (err) { setDeepDiveData((prev) => ({ ...prev, [key]: { error: err.message } })); }
-  };
-
   const activeFirmData = firms.find((f) => f.name === activeFirm);
   const getFilteredPeople = () => {
     if (!activeFirmData) return [];
     let people = [...activeFirmData.people];
     if (filterDest !== "All") people = people.filter((p) => p.destination_type === filterDest);
-    if (searchQ) { const q = searchQ.toLowerCase(); people = people.filter((p) => [p.name, p.former_title, p.destination, p.new_fund_strategy].some((v) => v?.toLowerCase().includes(q))); }
+    if (searchQ) { const q = searchQ.toLowerCase(); people = people.filter((p) => [p.name, p.former_title, p.destination, p.new_fund_strategy, p.current_role, p.notable_deals].some((v) => v?.toLowerCase().includes(q))); }
     people.sort((a, b) => { const yA = parseInt(a.departure_year) || 0; const yB = parseInt(b.departure_year) || 0; if (sortBy === "year_desc") return yB - yA; if (sortBy === "year_asc") return yA - yB; if (sortBy === "name") return (a.name || "").localeCompare(b.name || ""); return 0; });
     return people;
   };
 
   const destTypes = [["All", "All"], ["spinout", "Spinouts"], ["joined_other_firm", "Other Firm"], ["operating_role", "Operating"], ["retired", "Retired"], ["unknown", "Unknown"]];
-  const destColor = (type) => {
-    switch (type) {
-      case "spinout": return "#1a1a1a";
-      case "joined_other_firm": return "#1a1a1a";
-      case "operating_role": return "#1a1a1a";
-      case "retired": return "#1a1a1a";
-      default: return "#1a1a1a";
-    }
-  };
-  const destTextColor = (type) => {
-    switch (type) {
-      case "spinout": return "#000";
-      case "joined_other_firm": return "#555";
-      case "operating_role": return "#555";
-      case "retired": return "#888";
-      default: return "#888";
-    }
-  };
 
   if (!loaded) return null;
   const filteredPeople = activeFirmData ? getFilteredPeople() : [];
@@ -314,9 +265,7 @@ export default function App() {
                         const year = p.departure_year?.slice(0, 4) || "Unknown";
                         const showYear = sortBy !== "name" && year !== lastYear;
                         lastYear = year;
-                        const ddKey = `${p.name}|||${activeFirm}`;
-                        const isExpanded = deepDiving === ddKey;
-                        const dd = deepDiveData[ddKey];
+                        const isExpanded = expandedId === p._id;
 
                         return (
                           <div key={p._id} style={{animation:"slideIn .25s ease both",animationDelay:`${i*.02}s`}}>
@@ -324,7 +273,7 @@ export default function App() {
                               <div className="mono" style={{fontSize:11,fontWeight:500,color:"#999",padding:"16px 0 6px",borderBottom:"1px solid #f0f0f0",marginBottom:8,letterSpacing:"0.04em"}}>{year}</div>
                             )}
                             <div
-                              onClick={() => deepDive(p, activeFirm)}
+                              onClick={() => setExpandedId(isExpanded ? null : p._id)}
                               style={{padding:"12px 0",borderBottom:"1px solid #f5f5f5",cursor:"pointer",transition:"background 0.1s"}}
                               onMouseEnter={(e) => e.currentTarget.style.background="#fafafa"}
                               onMouseLeave={(e) => e.currentTarget.style.background="transparent"}
@@ -334,7 +283,10 @@ export default function App() {
                                   <div style={{fontSize:14,fontWeight:500,color:"#111"}}>{p.name}</div>
                                   <div className="mono" style={{fontSize:12,color:"#888",fontWeight:300,marginTop:1}}>{p.former_title}</div>
                                 </div>
-                                <button onClick={(e) => {e.stopPropagation();removePerson(activeFirm,p._id);}} style={{background:"none",border:"none",color:"#ddd",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>×</button>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span className="mono" style={{fontSize:10,color:"#bbb"}}>{isExpanded ? "−" : "+"}</span>
+                                  <button onClick={(e) => {e.stopPropagation();removePerson(activeFirm,p._id);}} style={{background:"none",border:"none",color:"#ddd",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>×</button>
+                                </div>
                               </div>
                               <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                                 <span className="mono" style={{fontSize:10,padding:"2px 8px",background:p.destination_type==="spinout"?"#111":"#f5f5f5",color:p.destination_type==="spinout"?"#fff":"#888",borderRadius:3,textTransform:"capitalize",fontWeight:400}}>
@@ -342,69 +294,43 @@ export default function App() {
                                 </span>
                                 <span style={{fontSize:13,color:"#444",fontWeight:400}}>{p.destination || "Unknown"}</span>
                               </div>
-                              {p.new_fund_strategy && <div style={{fontSize:12,color:"#999",marginTop:4}}>{p.new_fund_strategy}</div>}
-                              {p.fund_size && <div className="mono" style={{fontSize:11,color:"#aaa",marginTop:2}}>Fund: {p.fund_size}</div>}
-                              {p.summary && <div className="mono" style={{fontSize:11,color:"#bbb",marginTop:2}}>{p.summary}</div>}
 
                               {isExpanded && (
-                                <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #f0f0f0",animation:"fadeIn .2s ease"}}>
-                                  {!dd && <div className="mono" style={{fontSize:12,color:"#bbb"}}>Loading…</div>}
-                                  {dd?.error && <div className="mono" style={{fontSize:12,color:"#b91c1c"}}>{dd.error}</div>}
-                                  {dd && !dd.error && (
-                                    <div style={{display:"grid",gap:10}}>
-                                      {dd.current_role && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Current</div>
-                                          <div style={{fontSize:13,color:"#444"}}>{dd.current_role}</div>
-                                        </div>
-                                      )}
-                                      {dd.career_timeline?.length > 0 && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>Timeline</div>
-                                          {dd.career_timeline.map((ct, j) => (
-                                            <div key={j} className="mono" style={{fontSize:11,color:"#888",display:"flex",gap:8,padding:"1px 0"}}>
-                                              <span style={{color:"#bbb",minWidth:32}}>{ct.year}</span>
-                                              <span style={{color:"#666"}}>{ct.role}</span>
-                                              <span style={{color:"#aaa"}}>@ {ct.org}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-                                      {dd.fund_details?.name && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Fund</div>
-                                          <div style={{fontSize:12,color:"#444"}}>{dd.fund_details.name}{dd.fund_details.size ? ` · ${dd.fund_details.size}` : ""}{dd.fund_details.strategy ? ` · ${dd.fund_details.strategy}` : ""}</div>
-                                          {dd.fund_details.notable_investments?.length > 0 && (
-                                            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
-                                              {dd.fund_details.notable_investments.map((inv, j) => (
-                                                <span key={j} className="mono" style={{fontSize:10,padding:"2px 6px",background:"#f5f5f5",borderRadius:3,color:"#888"}}>{inv}</span>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                      {dd.notable_deals_at_former_firm?.length > 0 && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>Deals at {activeFirm}</div>
-                                          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                                            {dd.notable_deals_at_former_firm.map((d, j) => (
-                                              <span key={j} className="mono" style={{fontSize:10,padding:"2px 6px",background:"#f5f5f5",borderRadius:3,color:"#888"}}>{d}</span>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
-                                      {dd.linkedin_summary && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>LinkedIn</div>
-                                          <div style={{fontSize:11,color:"#888"}}>{dd.linkedin_summary}</div>
-                                        </div>
-                                      )}
-                                      {dd.additional_context && (
-                                        <div>
-                                          <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Context</div>
-                                          <div style={{fontSize:11,color:"#888"}}>{dd.additional_context}</div>
-                                        </div>
-                                      )}
+                                <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #f0f0f0",animation:"fadeIn .2s ease",display:"grid",gap:8}}>
+                                  {p.new_fund_strategy && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Strategy</div>
+                                      <div style={{fontSize:12,color:"#555"}}>{p.new_fund_strategy}</div>
+                                    </div>
+                                  )}
+                                  {p.fund_size && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Fund Size</div>
+                                      <div style={{fontSize:12,color:"#555"}}>{p.fund_size}</div>
+                                    </div>
+                                  )}
+                                  {p.current_role && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Current Role</div>
+                                      <div style={{fontSize:12,color:"#555"}}>{p.current_role}</div>
+                                    </div>
+                                  )}
+                                  {p.notable_deals && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Notable Deals</div>
+                                      <div style={{fontSize:12,color:"#555"}}>{p.notable_deals}</div>
+                                    </div>
+                                  )}
+                                  {p.departure_year && p.departure_year !== "Unknown" && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Departed</div>
+                                      <div style={{fontSize:12,color:"#555"}}>{p.departure_year}</div>
+                                    </div>
+                                  )}
+                                  {p.source && (
+                                    <div>
+                                      <div className="mono" style={{fontSize:9,color:"#bbb",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Source</div>
+                                      <div className="mono" style={{fontSize:11,color:"#aaa"}}>{p.source}</div>
                                     </div>
                                   )}
                                 </div>
