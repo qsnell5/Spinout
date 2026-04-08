@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const STORAGE_KEY = "spinout-v3";
+const PASS_DELAY_MS = 65000;
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -19,42 +20,116 @@ async function callAgent(prompt) {
   return response.json();
 }
 
-function buildResearchPrompt(firm) {
-  return `You are a VC/PE industry research analyst. Search the web thoroughly and compile a COMPREHENSIVE HISTORICAL record of partners, GPs, managing directors, and principals who have LEFT "${firm}" over time — whether they spun out to start their own fund, joined another firm, retired, or moved to an operating role.
+function buildPass1Prompt(firm) {
+  return `You are a VC/PE industry research analyst. Search the web thoroughly and compile a COMPREHENSIVE HISTORICAL record of partners, GPs, managing directors, principals, and senior investors who have LEFT "${firm}" over time — whether they spun out to start their own fund, joined another firm, retired, or moved to an operating role.
 
-Search extensively using multiple queries such as:
-- "${firm}" partner leaves
-- "${firm}" GP departure
-- "${firm}" spinout new fund
+Search using these queries:
+- "${firm}" partner leaves departure
+- "${firm}" managing director left
+- "${firm}" principal departure
 - former "${firm}" partner
-- "${firm}" alumni fund
-- "${firm}" executive changes
+- "${firm}" executive changes leadership
 
-Look across all available years — this is a backward-looking historical research task, not just recent news. Go as far back as you can find information.
+Look across ALL available years — go as far back as you can find. This is a historical research task.
 
-For each departure you find, return a JSON array with objects containing:
-{
+For each departure, return a JSON array:
+[{
   "name": "Full Name",
-  "former_title": "Their title/role at ${firm}",
-  "departure_year": "YYYY or YYYY-MM if known, or 'Unknown'",
-  "destination": "Where they went — new fund name, other firm, operating role, or 'Unknown'",
+  "former_title": "Title at ${firm}",
+  "departure_year": "YYYY or YYYY-MM or Unknown",
+  "destination": "Where they went or Unknown",
   "destination_type": "spinout | joined_other_firm | operating_role | retired | unknown",
-  "new_fund_strategy": "If they started a fund, what's the strategy? Otherwise empty string",
-  "fund_size": "If known, the fund size they raised. Otherwise empty string",
-  "current_role": "Their current title and organization if known, otherwise empty string",
-  "notable_deals": "Notable investments or deals they led at ${firm} if known, otherwise empty string",
-  "source": "Where you found this information (publication name)"
+  "new_fund_strategy": "Fund strategy if applicable, else empty string",
+  "fund_size": "Fund size if known, else empty string",
+  "current_role": "Current title and org if known, else empty string",
+  "notable_deals": "Key deals at ${firm} if known, else empty string",
+  "source": "Publication or source name"
+}]
+
+Return ONLY the JSON array. No markdown, no explanation. If nothing found, return [].`;
 }
 
-IMPORTANT: Return ONLY a valid JSON array. No markdown fences, no preamble, no explanation. If you find nothing, return [].
-Be thorough — try to find as many departures as possible across all time periods.`;
+function buildPass2Prompt(firm, existingNames) {
+  const nameList = existingNames.length > 0 ? `\n\nYou have ALREADY found these people — do NOT include them again:\n${existingNames.join(", ")}` : "";
+  return `You are a VC/PE industry research analyst doing a DEEP SEARCH for spinouts from "${firm}". Search specifically for anyone who left "${firm}" to START THEIR OWN FUND or investment firm.
+
+Search using these queries:
+- "${firm}" spinout new fund launch
+- "${firm}" alumni venture fund
+- former "${firm}" investor raises fund
+- "${firm}" GP launches debut fund
+- "${firm}" partner new firm
+- SEC Form D "${firm}" former
+
+Focus specifically on fund launches and spinouts. Go back as far as possible.${nameList}
+
+For each NEW person found, return the same JSON format:
+[{
+  "name": "Full Name",
+  "former_title": "Title at ${firm}",
+  "departure_year": "YYYY or YYYY-MM or Unknown",
+  "destination": "New fund/firm name or Unknown",
+  "destination_type": "spinout | joined_other_firm | operating_role | retired | unknown",
+  "new_fund_strategy": "Fund strategy if applicable, else empty string",
+  "fund_size": "Fund size if known, else empty string",
+  "current_role": "Current title and org if known, else empty string",
+  "notable_deals": "Key deals at ${firm} if known, else empty string",
+  "source": "Publication or source name"
+}]
+
+Return ONLY the JSON array. No markdown, no explanation. If no NEW people found, return [].`;
+}
+
+function buildPass3Prompt(firm, existingNames) {
+  const nameList = existingNames.length > 0 ? `\n\nYou have ALREADY found these people — do NOT include them again:\n${existingNames.join(", ")}` : "";
+  return `You are a VC/PE industry research analyst. You have already done two searches on "${firm}" departures but may have missed people. Do a FINAL SWEEP using DIFFERENT search approaches:
+
+Search using these queries:
+- "${firm}" team changes
+- "${firm}" investor moves to
+- "${firm}" partner joins (to find where they went, implying they left)
+- PitchBook "${firm}" personnel
+- LinkedIn "${firm}" former partner
+- "${firm}" reorganization
+- "${firm}" fund restructuring departures
+
+Also try searching for the firm's sub-entities, regional offices, or affiliated funds if applicable.${nameList}
+
+For each NEW person found, return the same JSON format:
+[{
+  "name": "Full Name",
+  "former_title": "Title at ${firm}",
+  "departure_year": "YYYY or YYYY-MM or Unknown",
+  "destination": "Where they went or Unknown",
+  "destination_type": "spinout | joined_other_firm | operating_role | retired | unknown",
+  "new_fund_strategy": "Fund strategy if applicable, else empty string",
+  "fund_size": "Fund size if known, else empty string",
+  "current_role": "Current title and org if known, else empty string",
+  "notable_deals": "Key deals at ${firm} if known, else empty string",
+  "source": "Publication or source name"
+}]
+
+Return ONLY the JSON array. No markdown, no explanation. If no NEW people found, return [].`;
+}
+
+function parseResults(raw) {
+  try {
+    const cleaned = raw.replace(/```json\n?|```/g, "").trim();
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (match) return JSON.parse(match[0]);
+  } catch (e) {
+    console.error("Parse fail:", e);
+  }
+  return [];
+}
+
+function deduplicatePeople(existing, newPeople) {
+  const existingNames = new Set(existing.map((p) => p.name.toLowerCase().trim()));
+  return newPeople.filter((p) => !existingNames.has(p.name.toLowerCase().trim()));
 }
 
 function loadData() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
 }
 function saveData(data) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { console.error(e); }
@@ -72,54 +147,111 @@ export default function App() {
   const [searchQ, setSearchQ] = useState("");
   const [expandedId, setExpandedId] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const cancelRef = useRef(false);
 
   useEffect(() => { setFirms(loadData()); setLoaded(true); }, []);
-
   const persist = useCallback((data) => { saveData(data); }, []);
 
+  const addLog = (msg) => setResearchLog((l) => [...l, msg]);
+
+  const sleep = (ms) => new Promise((resolve) => {
+    const interval = 1000;
+    let elapsed = 0;
+    const tick = () => {
+      if (cancelRef.current) { resolve(); return; }
+      elapsed += interval;
+      const remaining = Math.ceil((ms - elapsed) / 1000);
+      if (remaining > 0) {
+        setResearchLog((l) => {
+          const updated = [...l];
+          updated[updated.length - 1] = `Waiting ${remaining}s before next pass (rate limit buffer)…`;
+          return updated;
+        });
+        setTimeout(tick, interval);
+      } else {
+        resolve();
+      }
+    };
+    addLog(`Waiting ${Math.ceil(ms / 1000)}s before next pass (rate limit buffer)…`);
+    setTimeout(tick, interval);
+  });
+
   const researchFirm = async (firmName) => {
+    cancelRef.current = false;
     setResearching(true);
     setResearchError(null);
-    setResearchLog(["Starting research…", `Firm: ${firmName}`]);
+    setResearchLog([]);
+    let allPeople = [];
+
     try {
-      setResearchLog((l) => [...l, "Searching press releases, news, SEC filings…"]);
-      const data = await callAgent(buildResearchPrompt(firmName));
-      setResearchLog((l) => [...l, "Parsing…"]);
-      const raw = data.text || "";
-      let parsed = [];
-      try {
-        const cleaned = raw.replace(/```json\n?|```/g, "").trim();
-        const match = cleaned.match(/\[[\s\S]*\]/);
-        if (match) parsed = JSON.parse(match[0]);
-      } catch (pe) {
-        console.error("Parse fail:", pe, raw);
-        setResearchError("Research completed but couldn't parse results.");
-      }
-      const people = parsed.map((p) => ({ ...p, _id: uid() }));
-      setFirms((prev) => {
-        const existing = prev.find((f) => f.name.toLowerCase() === firmName.toLowerCase());
-        let next;
-        if (existing) {
-          const existingNames = new Set(existing.people.map((p) => p.name.toLowerCase()));
-          const newPeople = people.filter((p) => !existingNames.has(p.name.toLowerCase()));
-          next = prev.map((f) => f.name.toLowerCase() === firmName.toLowerCase() ? { ...f, people: [...f.people, ...newPeople], lastResearched: new Date().toISOString() } : f);
-        } else {
-          next = [...prev, { name: firmName, people, lastResearched: new Date().toISOString(), id: uid() }];
-        }
-        persist(next);
-        setActiveFirm(firmName);
-        return next;
-      });
-      setResearchLog((l) => [...l, `Done — ${people.length} departure${people.length !== 1 ? "s" : ""} found`]);
+      // Pass 1
+      addLog("Pass 1/3 — Searching for senior departures…");
+      const r1 = await callAgent(buildPass1Prompt(firmName));
+      const p1 = parseResults(r1.text || "").map((p) => ({ ...p, _id: uid() }));
+      allPeople = [...p1];
+      addLog(`Pass 1 complete — found ${p1.length} people`);
+      updateFirmData(firmName, allPeople);
+
+      if (cancelRef.current) throw new Error("Cancelled");
+
+      // Wait
+      await sleep(PASS_DELAY_MS);
+      if (cancelRef.current) throw new Error("Cancelled");
+
+      // Pass 2
+      const names1 = allPeople.map((p) => p.name);
+      addLog("Pass 2/3 — Deep search for spinouts & fund launches…");
+      const r2 = await callAgent(buildPass2Prompt(firmName, names1));
+      const p2raw = parseResults(r2.text || "");
+      const p2 = deduplicatePeople(allPeople, p2raw).map((p) => ({ ...p, _id: uid() }));
+      allPeople = [...allPeople, ...p2];
+      addLog(`Pass 2 complete — found ${p2.length} new people`);
+      updateFirmData(firmName, allPeople);
+
+      if (cancelRef.current) throw new Error("Cancelled");
+
+      // Wait
+      await sleep(PASS_DELAY_MS);
+      if (cancelRef.current) throw new Error("Cancelled");
+
+      // Pass 3
+      const names2 = allPeople.map((p) => p.name);
+      addLog("Pass 3/3 — Final sweep with alternate search patterns…");
+      const r3 = await callAgent(buildPass3Prompt(firmName, names2));
+      const p3raw = parseResults(r3.text || "");
+      const p3 = deduplicatePeople(allPeople, p3raw).map((p) => ({ ...p, _id: uid() }));
+      allPeople = [...allPeople, ...p3];
+      addLog(`Pass 3 complete — found ${p3.length} new people`);
+      updateFirmData(firmName, allPeople);
+
+      addLog(`Research complete — ${allPeople.length} total departures found`);
     } catch (err) {
-      setResearchError(err.message);
-      setResearchLog((l) => [...l, `Error: ${err.message}`]);
+      if (err.message !== "Cancelled") {
+        setResearchError(err.message);
+        addLog(`Error: ${err.message}`);
+      }
     } finally { setResearching(false); }
+  };
+
+  const updateFirmData = (firmName, people) => {
+    setFirms((prev) => {
+      const existing = prev.find((f) => f.name.toLowerCase() === firmName.toLowerCase());
+      let next;
+      if (existing) {
+        next = prev.map((f) => f.name.toLowerCase() === firmName.toLowerCase() ? { ...f, people, lastResearched: new Date().toISOString() } : f);
+      } else {
+        next = [...prev, { name: firmName, people, lastResearched: new Date().toISOString(), id: uid() }];
+      }
+      persist(next);
+      setActiveFirm(firmName);
+      return next;
+    });
   };
 
   const addFirm = () => { const name = firmInput.trim(); if (!name) return; setFirmInput(""); researchFirm(name); };
   const removeFirm = (firmName) => { setFirms((prev) => { const next = prev.filter((f) => f.name !== firmName); persist(next); return next; }); if (activeFirm === firmName) setActiveFirm(null); };
   const removePerson = (firmName, personId) => { setFirms((prev) => { const next = prev.map((f) => f.name === firmName ? { ...f, people: f.people.filter((p) => p._id !== personId) } : f); persist(next); return next; }); };
+  const cancelResearch = () => { cancelRef.current = true; };
 
   const activeFirmData = firms.find((f) => f.name === activeFirm);
   const getFilteredPeople = () => {
@@ -172,13 +304,19 @@ export default function App() {
               placeholder="Enter firm name…"
               style={{flex:1,padding:"9px 12px",fontSize:13,background:"#fafafa",border:"1px solid #e5e5e5",borderRadius:6,color:"#111",outline:"none",fontFamily:"inherit"}}
             />
-            <button
-              disabled={!firmInput.trim() || researching}
-              onClick={addFirm}
-              style={{padding:"9px 18px",fontSize:12,fontWeight:500,color:"#fff",background:"#111",border:"none",borderRadius:6,cursor:"pointer",opacity:!firmInput.trim()||researching?.4:1,fontFamily:"inherit",whiteSpace:"nowrap"}}
-            >
-              {researching ? "Researching…" : "Research"}
-            </button>
+            {researching ? (
+              <button onClick={cancelResearch} style={{padding:"9px 18px",fontSize:12,fontWeight:500,color:"#b91c1c",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                Cancel
+              </button>
+            ) : (
+              <button
+                disabled={!firmInput.trim()}
+                onClick={addFirm}
+                style={{padding:"9px 18px",fontSize:12,fontWeight:500,color:"#fff",background:"#111",border:"none",borderRadius:6,cursor:"pointer",opacity:!firmInput.trim()?.4:1,fontFamily:"inherit",whiteSpace:"nowrap"}}
+              >
+                Research
+              </button>
+            )}
           </div>
         </div>
 
@@ -218,7 +356,7 @@ export default function App() {
             {!activeFirm && !researching && (
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"50vh",textAlign:"center"}}>
                 <p style={{fontSize:15,color:"#bbb",fontWeight:400}}>Enter a firm name to research</p>
-                <p style={{fontSize:12,color:"#ddd",marginTop:6}}>Historical GP departures, spinouts, and talent movement</p>
+                <p style={{fontSize:12,color:"#ddd",marginTop:6}}>3-pass deep scan: senior departures, spinouts, then a final sweep</p>
               </div>
             )}
 
@@ -232,15 +370,8 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Toolbar */}
                 <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-                  <input
-                    className="mono"
-                    value={searchQ}
-                    onChange={(e) => setSearchQ(e.target.value)}
-                    placeholder="Filter…"
-                    style={{padding:"6px 10px",fontSize:12,background:"#fafafa",border:"1px solid #e5e5e5",borderRadius:4,color:"#111",outline:"none",width:160}}
-                  />
+                  <input className="mono" value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="Filter…" style={{padding:"6px 10px",fontSize:12,background:"#fafafa",border:"1px solid #e5e5e5",borderRadius:4,color:"#111",outline:"none",width:160}} />
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                     {destTypes.map(([val, label]) => (
                       <button key={val} onClick={() => setFilterDest(val)} style={{padding:"4px 10px",fontSize:11,background:filterDest===val?"#111":"transparent",color:filterDest===val?"#fff":"#999",border:"1px solid",borderColor:filterDest===val?"#111":"#e5e5e5",borderRadius:4,cursor:"pointer",fontFamily:"inherit",transition:"all 0.15s"}}>
